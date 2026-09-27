@@ -1,12 +1,34 @@
 /**
- * Dashboard page.
+ * WAFlow AI Dashboard.
  *
- * This is intentionally a presentation-only shell at this stage.
- *
- * Real dashboard metrics will later come from the FastAPI backend
- * through TanStack Query.
+ * The dashboard currently contains presentation-level metrics
+ * and the first real backend integration: API health status.
+ */
+
+import { useHealthQuery } from "../api/use-health";
+
+/**
+ * Main dashboard page.
  */
 export function DashboardPage() {
+  const healthQuery = useHealthQuery();
+
+  /**
+   * Determine the API connection state from the TanStack Query state.
+   */
+  const apiStatus = healthQuery.isLoading
+    ? "Connecting"
+    : healthQuery.isSuccess
+      ? "Connected"
+      : "Unavailable";
+
+  const apiStatusClass =
+    healthQuery.isSuccess
+      ? "text-emerald-600"
+      : healthQuery.isLoading
+        ? "text-amber-600"
+        : "text-red-600";
+
   return (
     <section className="space-y-6">
       {/* Page heading */}
@@ -23,6 +45,53 @@ export function DashboardPage() {
           Monitor your WhatsApp conversations, customers, AI activity,
           and business performance.
         </p>
+      </div>
+
+      {/* API connection status */}
+      <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-950">
+              Platform connection
+            </h2>
+
+            <p className="mt-1 text-sm text-gray-500">
+              Connection status between the WAFlow AI frontend and API.
+            </p>
+          </div>
+
+          <div
+            className={`flex items-center gap-2 text-sm font-semibold ${apiStatusClass}`}
+          >
+            <span
+              className={[
+                "h-2.5 w-2.5 rounded-full",
+                healthQuery.isSuccess
+                  ? "bg-emerald-500"
+                  : healthQuery.isLoading
+                    ? "bg-amber-500"
+                    : "bg-red-500",
+              ].join(" ")}
+            />
+
+            {apiStatus}
+          </div>
+        </div>
+
+        {/* Display the backend health response when available. */}
+        {healthQuery.isSuccess && (
+          <p className="mt-4 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            FastAPI backend is healthy and responding correctly.
+          </p>
+        )}
+
+        {/* Display a user-friendly error when the API is unavailable. */}
+        {healthQuery.isError && (
+          <p className="mt-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+            The backend API could not be reached. Make sure the FastAPI
+            server is running on port 8000.
+          </p>
+        )}
       </div>
 
       {/* KPI cards */}
@@ -116,9 +185,13 @@ function DashboardMetric({
     <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
       <p className="text-sm font-medium text-gray-500">{label}</p>
 
-      <p className="mt-2 text-2xl font-bold text-gray-950">{value}</p>
+      <p className="mt-2 text-2xl font-bold text-gray-950">
+        {value}
+      </p>
 
-      <p className="mt-1 text-xs text-gray-400">{description}</p>
+      <p className="mt-1 text-xs text-gray-400">
+        {description}
+      </p>
     </div>
   );
 }

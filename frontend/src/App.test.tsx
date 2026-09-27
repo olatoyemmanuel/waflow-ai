@@ -1,38 +1,56 @@
 /**
  * WAFlow AI - Application Tests
  *
- * These tests verify the behavior of the application's
- * root component and its initial routing.
- *
- * The test should focus on what the user can actually see
- * and interact with rather than implementation details.
+ * These tests verify the application's root rendering and
+ * dashboard behavior without requiring a real backend server.
  */
 
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 
 describe("App", () => {
-  it("renders the WAFlow AI dashboard", () => {
+  beforeEach(() => {
     /**
-     * Render the complete application.
+     * Mock the backend health endpoint.
      *
-     * App includes:
-     * - application providers
-     * - React Router
-     * - application layout
-     * - sidebar
-     * - topbar
-     * - dashboard
+     * This keeps the frontend test deterministic and means
+     * the test does not depend on FastAPI being started.
      */
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            success: true,
+            data: {
+              status: "healthy",
+            },
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+            },
+          },
+        ),
+      ),
+    );
+  });
+
+  afterEach(() => {
+    /**
+     * Restore the original global environment after every test.
+     */
+    vi.unstubAllGlobals();
+  });
+
+  it("renders the WAFlow AI dashboard", async () => {
     render(<App />);
 
     /**
-     * The root route redirects to /dashboard.
-     *
-     * Therefore, the dashboard heading should be available
-     * when the application starts.
+     * Verify that the dashboard page is rendered.
      */
     expect(
       screen.getByRole("heading", {
@@ -42,14 +60,14 @@ describe("App", () => {
     ).toBeInTheDocument();
 
     /**
-     * Verify that the WAFlow AI brand is visible.
+     * Verify the WAFlow AI brand.
      */
     expect(
       screen.getByText("WAFlow AI"),
     ).toBeInTheDocument();
 
     /**
-     * Verify that the primary navigation is available.
+     * Verify primary navigation.
      */
     expect(
       screen.getByRole("link", {
@@ -68,5 +86,19 @@ describe("App", () => {
         name: /Customers/,
       }),
     ).toBeInTheDocument();
+
+    /**
+     * Wait for the mocked backend health request to complete.
+     *
+     * This confirms that the dashboard successfully consumes
+     * the TanStack Query health integration.
+     */
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          "FastAPI backend is healthy and responding correctly.",
+        ),
+      ).toBeInTheDocument();
+    });
   });
 });
