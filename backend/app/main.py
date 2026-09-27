@@ -1,15 +1,20 @@
 """
 WAFlow AI FastAPI application entry point.
 
-This module creates the FastAPI application and configures
-cross-origin access for the frontend during development.
+Responsibilities:
+- Create the FastAPI application.
+- Configure development CORS.
+- Register the versioned API router.
+- Expose the health endpoint.
 
-Production CORS origins should eventually come from environment
-configuration rather than being hard-coded.
+Production CORS configuration should eventually come from
+environment configuration.
 """
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+from app.api.router import api_router
 
 app = FastAPI(
     title="WAFlow AI API",
@@ -21,21 +26,18 @@ app = FastAPI(
 # Frontend origins allowed to communicate with the API.
 #
 # During local development:
-# - Vite frontend runs on port 5173
-# - FastAPI runs on port 8000
+# - Vite frontend: http://localhost:5173
+# - FastAPI backend: http://localhost:8000
 #
-# We will move these origins into environment configuration
-# before production deployment.
+# These should move into environment configuration before
+# production deployment.
 ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
 
 
-# Configure CORS middleware.
-#
-# This allows the browser-based frontend to make API requests
-# to the FastAPI backend running on a different origin.
+# Configure browser cross-origin access.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -45,14 +47,22 @@ app.add_middleware(
 )
 
 
+# Register the versioned API.
+#
+# Authentication endpoints will therefore be available under:
+# /api/v1/auth/...
+app.include_router(
+    api_router,
+)
+
+
 @app.get("/health")
 async def health_check() -> dict[str, object]:
     """
     Return the current API health status.
 
-    This endpoint is intentionally simple because it will be used
-    by infrastructure monitoring and by the frontend integration
-    test for our first end-to-end API connection.
+    This endpoint remains outside /api/v1 because infrastructure
+    health checks should remain stable across API versions.
     """
 
     return {
