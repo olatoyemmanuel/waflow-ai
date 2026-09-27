@@ -1,3 +1,12 @@
+"""
+WAFlow AI application configuration.
+
+Settings are loaded from environment variables and the local .env file
+during development.
+
+Secrets must never be committed to source control.
+"""
+
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,7 +25,13 @@ class Settings(BaseSettings):
 
     jwt_secret: str
     jwt_refresh_secret: str
+
+    # Access tokens are intentionally short-lived.
     access_token_expire_minutes: int = 15
+
+    # Refresh tokens live substantially longer but are persisted,
+    # rotated, and revocable server-side.
+    refresh_token_expire_days: int = 30
 
     openai_api_key: str = ""
 
@@ -42,4 +57,8 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """
+    Return the cached application settings instance.
+    """
+
     return Settings()

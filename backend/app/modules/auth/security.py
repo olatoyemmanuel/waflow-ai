@@ -6,12 +6,25 @@ Responsibilities:
 - Password verification
 - JWT access-token creation
 - JWT access-token decoding
+- Opaque refresh-token generation
+- Refresh-token hashing
 
-Security note:
-JWTs are signed, not encrypted. Therefore we only place
-non-sensitive identifiers in the token payload.
+Security design:
+
+Access tokens:
+- Short-lived JWTs
+- Signed with the configured JWT secret
+- Contain only the user ID and token type
+
+Refresh tokens:
+- Cryptographically random opaque strings
+- Never stored in plaintext
+- Stored as SHA-256 hashes in PostgreSQL
+- Rotated after every successful refresh
 """
 
+import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -28,6 +41,9 @@ settings = get_settings()
 # Explicitly define the JWT algorithm so token creation and
 # verification cannot accidentally use different algorithms.
 JWT_ALGORITHM = "HS256"
+
+# Refresh tokens are deliberately long random values.
+REFRESH_TOKEN_BYTES = 64
 
 
 def hash_password(password: str) -> str:
@@ -58,8 +74,6 @@ def create_access_token(user_id: UUID) -> str:
     """
     Create a short-lived JWT access token.
 
-    The subject contains only the user ID.
-
     Tenant identity is deliberately NOT trusted from the JWT.
     Tenant membership must be resolved from the database.
     """
@@ -88,13 +102,8 @@ def decode_access_token(token: str) -> UUID:
     """
     Validate and decode an access token.
 
-    Returns:
-        UUID: authenticated user ID
-
-    Raises:
-        jwt.InvalidTokenError:
-            When the token is invalid, expired, malformed,
-            or has an unexpected token type.
+    Raises jwt.InvalidTokenError when the token is invalid,
+    expired, malformed, or has an unexpected token type.
     """
 
     payload = jwt.decode(
@@ -121,3 +130,44 @@ def decode_access_token(token: str) -> UUID:
         raise jwt.InvalidTokenError(
             "Token subject is invalid.",
         ) from exc
+
+
+def create_refresh_token() -> str:
+    """
+    Create a cryptographically random opaque refresh token.
+
+    The plaintext token is returned to the caller and must only be
+    transmitted to the authenticated client.
+    """
+
+    return secrets.token_urlsafe(
+        REFRESH_TOKEN_BYTES,
+    )
+
+
+def hash_refresh_token(token: str) -> str:
+    """
+    Hash a refresh token for database persistence and lookup.
+
+    SHA-256 is appropriate here because the input is already a
+    high-entropy random secret rather than a human password.
+    """
+
+    return hashlib.sha256(
+        token.encode("utf-8"),
+    ).hexdigest()
+
+
+def get_refresh_token_expiry() -> datetime:
+    """
+    Calculate the refresh-token expiration time.
+
+    The refresh lifetime is configured independently from the
+    short-lived access-token lifetime.
+    """
+
+    refresh_days = settings.refresh_token_expire_days
+
+    return datetime.now(timezone.utc) + timedelta(
+        days=refresh_days,
+    )

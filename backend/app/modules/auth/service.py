@@ -3,18 +3,29 @@ WAFlow AI authentication service.
 
 This module contains authentication business logic.
 
-Routes should remain thin and delegate business operations
-to this service layer.
+Routes remain thin and delegate authentication operations to this
+service layer.
+
+Refresh-token security:
+
+1. Login creates a refresh-token family.
+2. Only the token hash is stored.
+3. Every successful refresh revokes the current session.
+4. A replacement session is created.
+5. Reuse of a revoked token revokes the entire token family.
+6. Security-related revocations are committed by the router before
+   returning an authentication error.
 """
 
 import re
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.modules.auth.refresh_sessions import RefreshSession
 from app.modules.auth.schemas import (
     CurrentUserResponse,
     RegisterRequest,
@@ -22,7 +33,10 @@ from app.modules.auth.schemas import (
 )
 from app.modules.auth.security import (
     create_access_token,
+    create_refresh_token,
+    get_refresh_token_expiry,
     hash_password,
+    hash_refresh_token,
     verify_password,
 )
 from app.modules.identity.models import (
@@ -34,6 +48,20 @@ from app.modules.identity.models import (
     User,
     UserStatus,
 )
+
+
+class RefreshTokenSecurityError(ValueError):
+    """
+    Authentication error that also represents a security-state change.
+
+    Examples:
+    - Refresh-token reuse detected.
+    - Expired refresh token revoked.
+    - Refresh token belonging to an inactive user revoked.
+
+    The caller must COMMIT these changes before returning the HTTP error.
+    Rolling them back would undo the security revocation.
+    """
 
 
 def normalize_email(email: str) -> str:
@@ -71,11 +99,6 @@ async def get_unique_tenant_slug(
 ) -> str:
     """
     Generate a tenant slug and resolve collisions.
-
-    Example:
-        acme
-        acme-2
-        acme-3
     """
 
     base_slug = generate_slug(business_name)
@@ -102,9 +125,6 @@ async def get_owner_role(
 ) -> Role:
     """
     Retrieve the existing OWNER role seeded by the RBAC system.
-
-    We intentionally do not create roles during registration.
-    Roles are controlled by the RBAC seed/migration system.
     """
 
     result = await db.execute(
@@ -174,7 +194,6 @@ async def register_user(
     db.add(user)
     db.add(tenant)
 
-    # Flush generates the UUIDs without committing the transaction.
     await db.flush()
 
     membership = Membership(
@@ -215,7 +234,6 @@ async def authenticate_user(
     if user is None:
         return None
 
-    # Suspended/deleted accounts must not authenticate.
     if user.status != UserStatus.ACTIVE:
         return None
 
@@ -228,6 +246,224 @@ async def authenticate_user(
     user.last_login_at = datetime.now(timezone.utc)
 
     return user
+
+
+async def create_refresh_session(
+    db: AsyncSession,
+    user_id: UUID,
+    token_family_id: UUID | None = None,
+    user_agent: str | None = None,
+    ip_address: str | None = None,
+) -> tuple[RefreshSession, str]:
+    """
+    Create a refresh session and return:
+
+        (database session, plaintext refresh token)
+
+    Only the SHA-256 hash is stored in PostgreSQL.
+    """
+
+    refresh_token = create_refresh_token()
+
+    session = RefreshSession(
+        user_id=user_id,
+        token_hash=hash_refresh_token(refresh_token),
+        token_family_id=token_family_id or uuid4(),
+        expires_at=get_refresh_token_expiry(),
+        user_agent=user_agent,
+        ip_address=ip_address,
+    )
+
+    db.add(session)
+
+    await db.flush()
+
+    return session, refresh_token
+
+
+async def issue_token_pair(
+    db: AsyncSession,
+    user: User,
+    user_agent: str | None = None,
+    ip_address: str | None = None,
+) -> tuple[str, str]:
+    """
+    Issue an access token and a new refresh token.
+
+    A new login always starts a new refresh-token family.
+    """
+
+    access_token = create_access_token(user.id)
+
+    _, refresh_token = await create_refresh_session(
+        db,
+        user.id,
+        user_agent=user_agent,
+        ip_address=ip_address,
+    )
+
+    return access_token, refresh_token
+
+
+async def rotate_refresh_token(
+    db: AsyncSession,
+    refresh_token: str,
+    user_agent: str | None = None,
+    ip_address: str | None = None,
+) -> tuple[User, str, str]:
+    """
+    Validate and rotate a refresh token.
+
+    Returns:
+        user, new_access_token, new_refresh_token
+
+    Security behavior:
+    - Unknown token → reject without a database security-state change.
+    - Expired token → revoke it and reject.
+    - Active token → rotate normally.
+    - Revoked/reused token → revoke the entire token family and reject.
+
+    The caller controls the final transaction commit.
+    """
+
+    token_hash = hash_refresh_token(refresh_token)
+
+    result = await db.execute(
+        select(RefreshSession)
+        .where(
+            RefreshSession.token_hash == token_hash,
+        )
+        .with_for_update(),
+    )
+
+    session = result.scalar_one_or_none()
+
+    # An unknown token cannot be associated with a token family.
+    # There is therefore no security-state change to persist.
+    if session is None:
+        raise ValueError(
+            "Invalid refresh token.",
+        )
+
+    now = datetime.now(timezone.utc)
+
+    # A revoked token being presented again indicates possible
+    # refresh-token replay/reuse.
+    #
+    # IMPORTANT:
+    # The family revocation must survive the HTTP 401 response.
+    # Therefore we raise RefreshTokenSecurityError rather than the
+    # ordinary ValueError used for unknown tokens.
+    if session.revoked_at is not None:
+        await db.execute(
+            update(RefreshSession)
+            .where(
+                RefreshSession.token_family_id
+                == session.token_family_id,
+                RefreshSession.revoked_at.is_(None),
+            )
+            .values(
+                revoked_at=now,
+            ),
+        )
+
+        raise RefreshTokenSecurityError(
+            "Refresh token reuse detected.",
+        )
+
+    # Expired tokens are explicitly revoked so they cannot later
+    # become valid through an application bug or clock issue.
+    if session.expires_at <= now:
+        session.revoked_at = now
+
+        raise RefreshTokenSecurityError(
+            "Refresh token has expired.",
+        )
+
+    user_result = await db.execute(
+        select(User).where(
+            User.id == session.user_id,
+        ),
+    )
+
+    user = user_result.scalar_one_or_none()
+
+    # If the account is no longer active, revoke the refresh session.
+    if user is None or user.status != UserStatus.ACTIVE:
+        session.revoked_at = now
+
+        raise RefreshTokenSecurityError(
+            "User account is not active.",
+        )
+
+    # Generate the replacement token before updating the old session
+    # so the replacement relationship can be persisted atomically.
+    new_refresh_token = create_refresh_token()
+
+    replacement_session = RefreshSession(
+        user_id=user.id,
+        token_hash=hash_refresh_token(new_refresh_token),
+        token_family_id=session.token_family_id,
+        expires_at=get_refresh_token_expiry(),
+        user_agent=user_agent,
+        ip_address=ip_address,
+    )
+
+    db.add(replacement_session)
+
+    await db.flush()
+
+    # Rotate the old session.
+    #
+    # revoked_at prevents the old token from being used again.
+    # replaced_by_session_id provides an audit trail of rotation.
+    session.revoked_at = now
+    session.last_used_at = now
+    session.replaced_by_session_id = replacement_session.id
+
+    new_access_token = create_access_token(user.id)
+
+    return (
+        user,
+        new_access_token,
+        new_refresh_token,
+    )
+
+
+async def revoke_refresh_token(
+    db: AsyncSession,
+    refresh_token: str,
+) -> bool:
+    """
+    Revoke a refresh session.
+
+    Returns True when an active session was revoked.
+
+    Logout is intentionally idempotent: an unknown or already revoked
+    token does not reveal additional session information.
+    """
+
+    token_hash = hash_refresh_token(refresh_token)
+
+    result = await db.execute(
+        select(RefreshSession)
+        .where(
+            RefreshSession.token_hash == token_hash,
+        )
+        .with_for_update(),
+    )
+
+    session = result.scalar_one_or_none()
+
+    if session is None:
+        return False
+
+    if session.revoked_at is None:
+        session.revoked_at = datetime.now(timezone.utc)
+
+        return True
+
+    return False
 
 
 async def build_current_user_response(
@@ -289,11 +525,3 @@ async def build_current_user_response(
         status=user.status.value,
         memberships=memberships,
     )
-
-
-def create_user_access_token(user: User) -> str:
-    """
-    Create an access token for an authenticated user.
-    """
-
-    return create_access_token(user.id)

@@ -1,13 +1,14 @@
 """
 WAFlow AI authentication schemas.
 
-These Pydantic models define the public request and response
-contracts for authentication endpoints.
+These Pydantic models define the public request and response contracts
+for authentication endpoints.
 
 Important:
 - Passwords are accepted only on input.
-- Password hashes are never returned through the API.
-- UUIDs are represented as strings in the JSON API.
+- Password hashes are never returned.
+- Refresh tokens are accepted only through dedicated authentication
+  requests and are never persisted in plaintext.
 """
 
 from uuid import UUID
@@ -18,11 +19,6 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 class RegisterRequest(BaseModel):
     """
     Payload used to create the first user and tenant.
-
-    Registration creates:
-    1. User
-    2. Tenant
-    3. OWNER membership
     """
 
     model_config = ConfigDict(str_strip_whitespace=True)
@@ -49,16 +45,43 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=128)
 
 
+class RefreshTokenRequest(BaseModel):
+    """
+    Request containing a refresh token.
+
+    The token is treated as a bearer credential and must be protected
+    by the client.
+    """
+
+    refresh_token: str = Field(
+        min_length=20,
+        max_length=1024,
+    )
+
+
+class LogoutRequest(BaseModel):
+    """
+    Request used to revoke a refresh session.
+    """
+
+    refresh_token: str = Field(
+        min_length=20,
+        max_length=1024,
+    )
+
+
 class TokenResponse(BaseModel):
     """
     Authentication token response.
 
-    The refresh token will be persisted and rotated in the
-    refresh-session milestone. For this milestone we establish
-    the access-token contract.
+    Access tokens are short-lived JWTs.
+
+    Refresh tokens are opaque random credentials that are rotated
+    after successful use.
     """
 
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
 
 
