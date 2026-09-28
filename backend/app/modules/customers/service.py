@@ -36,6 +36,9 @@ from app.modules.customers.schemas import CustomerCreate, CustomerUpdate
 class CustomerService(TenantScopedService[Customer]):
     """
     Application service for tenant-owned customers.
+
+    The repository and TenantContext must belong to the same tenant.
+    TenantScopedService verifies this invariant during construction.
     """
 
     def __init__(
@@ -88,7 +91,9 @@ class CustomerService(TenantScopedService[Customer]):
             notes=data.notes,
         )
 
-        return await self.repository.add(customer)
+        return await self.repository.add(
+            customer,
+        )
 
     async def get(
         self,
@@ -98,7 +103,9 @@ class CustomerService(TenantScopedService[Customer]):
         Retrieve one customer inside the authorized tenant.
         """
 
-        return await self.repository.get_by_id(customer_id)
+        return await self.repository.get_by_id(
+            customer_id,
+        )
 
     async def list(
         self,
@@ -108,7 +115,9 @@ class CustomerService(TenantScopedService[Customer]):
         Retrieve all customers using accurate tenant-scoped pagination.
         """
 
-        return await super().list(pagination)
+        return await super().list(
+            pagination,
+        )
 
     async def list_by_status(
         self,
@@ -124,7 +133,9 @@ class CustomerService(TenantScopedService[Customer]):
             pagination=pagination,
         )
 
-        total = await self.repository.count_by_status(status)
+        total = await self.repository.count_by_status(
+            status,
+        )
 
         metadata = build_pagination_meta(
             page=pagination.page,
@@ -148,7 +159,9 @@ class CustomerService(TenantScopedService[Customer]):
             pagination=pagination,
         )
 
-        total = await self.repository.count_search(query)
+        total = await self.repository.count_search(
+            query,
+        )
 
         metadata = build_pagination_meta(
             page=pagination.page,
@@ -165,9 +178,15 @@ class CustomerService(TenantScopedService[Customer]):
     ) -> Customer | None:
         """
         Update a customer belonging to the authorized tenant.
+
+        Archiving is intentionally excluded from normal updates. The
+        dedicated archive use case requires the customers.delete
+        permission at the API authorization layer.
         """
 
-        customer = await self.repository.get_by_id(customer_id)
+        customer = await self.repository.get_by_id(
+            customer_id,
+        )
 
         if customer is None:
             return None
@@ -175,6 +194,16 @@ class CustomerService(TenantScopedService[Customer]):
         update_values = data.model_dump(
             exclude_unset=True,
         )
+
+        # SECURITY BOUNDARY:
+        #
+        # Do not allow a caller with customers.update permission to archive
+        # a customer through PATCH. Archiving must use the dedicated
+        # operation protected by customers.delete.
+        if update_values.get("status") == CustomerStatus.ARCHIVED:
+            raise ValueError(
+                "Archiving a customer requires the archive operation.",
+            )
 
         if "email" in update_values:
             email = update_values["email"]
@@ -215,7 +244,16 @@ class CustomerService(TenantScopedService[Customer]):
                 value,
             )
 
+        # Flush the UPDATE first so the database applies the server-side
+        # updated_at=now() value.
         await self.repository.db.flush()
+
+        # Explicitly reload server-generated fields before returning the
+        # ORM object. This prevents Pydantic serialization from triggering
+        # implicit asynchronous I/O and causing MissingGreenlet.
+        await self.repository.db.refresh(
+            customer,
+        )
 
         return customer
 
@@ -224,17 +262,28 @@ class CustomerService(TenantScopedService[Customer]):
         customer_id: UUID,
     ) -> Customer | None:
         """
-        Archive a customer without physically deleting the database row.
+        Archive a customer without physically deleting its database row.
+
+        API authorization requires customers.delete for this operation.
         """
 
-        customer = await self.repository.get_by_id(customer_id)
+        customer = await self.repository.get_by_id(
+            customer_id,
+        )
 
         if customer is None:
             return None
 
         customer.status = CustomerStatus.ARCHIVED
 
+        # Persist the mutation.
         await self.repository.db.flush()
+
+        # Reload server-generated updated_at before the ORM object crosses
+        # the async application boundary.
+        await self.repository.db.refresh(
+            customer,
+        )
 
         return customer
 
@@ -244,15 +293,25 @@ class CustomerService(TenantScopedService[Customer]):
     ) -> Customer | None:
         """
         Restore an archived customer to ACTIVE status.
+
+        API authorization requires customers.update for this operation.
         """
 
-        customer = await self.repository.get_by_id(customer_id)
+        customer = await self.repository.get_by_id(
+            customer_id,
+        )
 
         if customer is None:
             return None
 
         customer.status = CustomerStatus.ACTIVE
 
+        # Persist the mutation.
         await self.repository.db.flush()
+
+        # Reload server-generated updated_at before response serialization.
+        await self.repository.db.refresh(
+            customer,
+        )
 
         return customer
