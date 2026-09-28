@@ -12,13 +12,19 @@ contract.
 
 from pydantic import BaseModel, Field
 
+# Security limit for SQL OFFSET pagination.
+#
+# A very large page number can result in an unnecessarily expensive
+# database query. Keeping this limit at module level prevents Pydantic
+# from treating it as a model field.
+MAX_PAGE = 1_000
+
 
 class PaginationParams(BaseModel):
     """
     Validated pagination parameters.
 
     `page` is one-based.
-
     `page_size` is deliberately capped to prevent clients from
     requesting excessively large result sets.
     """
@@ -26,7 +32,10 @@ class PaginationParams(BaseModel):
     page: int = Field(
         default=1,
         ge=1,
-        description="One-based page number.",
+        le=MAX_PAGE,
+        description=(
+            f"One-based page number. Maximum is {MAX_PAGE}."
+        ),
     )
 
     page_size: int = Field(
@@ -41,6 +50,7 @@ class PaginationParams(BaseModel):
         """
         Calculate the SQL offset for the current page.
         """
+
         return (self.page - 1) * self.page_size
 
     @property
@@ -51,6 +61,7 @@ class PaginationParams(BaseModel):
         Keeping this as a property makes service and repository code
         explicit and readable.
         """
+
         return self.page_size
 
 
@@ -84,6 +95,7 @@ def build_pagination_meta(
     Returns:
         Pagination metadata suitable for an API response.
     """
+
     total_pages = (
         (total + page_size - 1) // page_size
         if total > 0

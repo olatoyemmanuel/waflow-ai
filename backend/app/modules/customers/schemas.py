@@ -8,6 +8,8 @@ Security rules:
 - tenant_id is never accepted from client input
 - id and timestamps are server-managed
 - create/update payloads expose only mutable customer fields
+- archived customers cannot be created directly
+- customer notes have an explicit maximum length
 """
 
 from datetime import datetime
@@ -27,6 +29,10 @@ from app.modules.customers.models import CustomerStatus
 class CustomerCreate(BaseModel):
     """
     Payload for creating a customer.
+
+    ARCHIVED is intentionally excluded from the normal creation lifecycle.
+    Customers must be created first and archived through the dedicated
+    archive operation protected by the customers.delete permission.
     """
 
     model_config = ConfigDict(
@@ -67,7 +73,10 @@ class CustomerCreate(BaseModel):
 
     status: CustomerStatus = Field(
         default=CustomerStatus.ACTIVE,
-        description="Customer lifecycle status.",
+        description=(
+            "Customer lifecycle status. "
+            "Archived customers must use the archive operation."
+        ),
     )
 
     source: str | None = Field(
@@ -78,8 +87,31 @@ class CustomerCreate(BaseModel):
 
     notes: str | None = Field(
         default=None,
+        max_length=10_000,
         description="Internal customer notes.",
     )
+
+    @field_validator("status")
+    @classmethod
+    def validate_create_status(
+        cls,
+        value: CustomerStatus,
+    ) -> CustomerStatus:
+        """
+        Prevent direct creation of archived customers.
+
+        ARCHIVED is a lifecycle state reached only through the dedicated
+        archive use case, which is protected by the customers.delete
+        permission at the API layer.
+        """
+
+        if value == CustomerStatus.ARCHIVED:
+            raise ValueError(
+                "Archived customers must be created as an active, "
+                "inactive, or blocked customer and archived separately.",
+            )
+
+        return value
 
     @field_validator("first_name", "last_name")
     @classmethod
@@ -180,6 +212,7 @@ class CustomerUpdate(BaseModel):
 
     notes: str | None = Field(
         default=None,
+        max_length=10_000,
         description="Internal customer notes.",
     )
 

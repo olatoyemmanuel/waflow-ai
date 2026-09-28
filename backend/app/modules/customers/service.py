@@ -57,7 +57,22 @@ class CustomerService(TenantScopedService[Customer]):
     ) -> Customer:
         """
         Create a customer inside the authorized tenant.
+
+        ARCHIVED is deliberately rejected here as defense in depth.
+        The API schema already rejects archived creation, but the
+        application service must preserve the lifecycle invariant even
+        when called outside the HTTP layer.
         """
+
+        # SECURITY BOUNDARY:
+        #
+        # A customer must never be created directly in the ARCHIVED state.
+        # Archiving is a separate operation protected by customers.delete.
+        if data.status == CustomerStatus.ARCHIVED:
+            raise ValueError(
+                "Archived customers must be created as an active, "
+                "inactive, or blocked customer and archived separately.",
+            )
 
         if data.email is not None:
             existing_customer = await self.repository.get_by_email(
