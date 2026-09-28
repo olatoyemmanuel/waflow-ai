@@ -4,16 +4,22 @@ WAFlow AI customer/CRM API schemas.
 These Pydantic schemas define the API boundary for customer records.
 
 Security rules:
-- tenant_id is never accepted from client input.
-- id and timestamps are server-managed.
-- Create and update payloads expose only fields the client is allowed to change.
-- Validation happens before application services and repositories are called.
+
+- tenant_id is never accepted from client input
+- id and timestamps are server-managed
+- create/update payloads expose only mutable customer fields
 """
 
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    field_validator,
+)
 
 from app.modules.customers.models import CustomerStatus
 
@@ -21,9 +27,6 @@ from app.modules.customers.models import CustomerStatus
 class CustomerCreate(BaseModel):
     """
     Payload for creating a customer.
-
-    tenant_id, id, created_at, and updated_at are intentionally excluded.
-    The tenant is derived from the authenticated TenantContext.
     """
 
     model_config = ConfigDict(
@@ -80,7 +83,10 @@ class CustomerCreate(BaseModel):
 
     @field_validator("first_name", "last_name")
     @classmethod
-    def validate_required_names(cls, value: str) -> str:
+    def validate_required_names(
+        cls,
+        value: str,
+    ) -> str:
         """
         Reject names that become empty after whitespace normalization.
         """
@@ -92,7 +98,12 @@ class CustomerCreate(BaseModel):
 
         return normalized
 
-    @field_validator("phone", "company_name", "source", "notes")
+    @field_validator(
+        "phone",
+        "company_name",
+        "source",
+        "notes",
+    )
     @classmethod
     def normalize_optional_strings(
         cls,
@@ -101,8 +112,7 @@ class CustomerCreate(BaseModel):
         """
         Normalize optional string fields.
 
-        Empty strings are converted to None so the API does not persist
-        meaningless empty values.
+        Empty strings become None.
         """
 
         if value is None:
@@ -115,12 +125,10 @@ class CustomerCreate(BaseModel):
 
 class CustomerUpdate(BaseModel):
     """
-    Payload for updating an existing customer.
+    Payload for partially updating a customer.
 
-    All fields are optional because PATCH-style updates may modify only
+    All fields are optional because PATCH requests may modify only
     selected customer attributes.
-
-    tenant_id, id, created_at, and updated_at are intentionally excluded.
     """
 
     model_config = ConfigDict(
@@ -177,7 +185,10 @@ class CustomerUpdate(BaseModel):
 
     @field_validator("first_name", "last_name")
     @classmethod
-    def validate_optional_names(cls, value: str | None) -> str | None:
+    def validate_optional_names(
+        cls,
+        value: str | None,
+    ) -> str | None:
         """
         Reject names that become empty after whitespace normalization.
         """
@@ -192,7 +203,12 @@ class CustomerUpdate(BaseModel):
 
         return normalized
 
-    @field_validator("phone", "company_name", "source", "notes")
+    @field_validator(
+        "phone",
+        "company_name",
+        "source",
+        "notes",
+    )
     @classmethod
     def normalize_optional_strings(
         cls,
@@ -201,7 +217,7 @@ class CustomerUpdate(BaseModel):
         """
         Normalize optional string fields.
 
-        Empty strings are converted to None.
+        Empty strings become None.
         """
 
         if value is None:
@@ -215,8 +231,6 @@ class CustomerUpdate(BaseModel):
 class CustomerResponse(BaseModel):
     """
     Public representation of a customer returned by the API.
-
-    Database-managed fields are exposed as read-only response data.
     """
 
     model_config = ConfigDict(
@@ -241,13 +255,31 @@ class CustomerListResponse(BaseModel):
     """
     Paginated customer collection response.
 
-    The pagination metadata type will be connected to the application's
-    existing pagination foundation when the customer service/API layer
-    is implemented.
+    This flattened pagination contract is retained for compatibility with
+    the existing customer API schema and tests.
+
+    Internally, CustomerService uses the reusable PaginationMeta object.
+    The router maps that internal object into this public response shape.
     """
 
     items: list[CustomerResponse]
-    total: int
-    page: int
-    page_size: int
-    pages: int
+
+    total: int = Field(
+        ge=0,
+        description="Total number of matching customers.",
+    )
+
+    page: int = Field(
+        ge=1,
+        description="Current one-based page.",
+    )
+
+    page_size: int = Field(
+        ge=1,
+        description="Number of customers requested per page.",
+    )
+
+    pages: int = Field(
+        ge=0,
+        description="Total number of available pages.",
+    )

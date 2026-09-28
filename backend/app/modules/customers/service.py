@@ -36,9 +36,6 @@ from app.modules.customers.schemas import CustomerCreate, CustomerUpdate
 class CustomerService(TenantScopedService[Customer]):
     """
     Application service for tenant-owned customers.
-
-    The repository and TenantContext must belong to the same tenant.
-    TenantScopedService verifies this invariant during construction.
     """
 
     def __init__(
@@ -56,16 +53,9 @@ class CustomerService(TenantScopedService[Customer]):
         data: CustomerCreate,
     ) -> Customer:
         """
-        Create a new customer inside the authorized tenant.
-
-        The tenant_id is never accepted from CustomerCreate. It is derived
-        exclusively from TenantContext through this service.
-
-        Raises:
-            ValueError:
-                When the email or phone already belongs to a customer
-                inside the current tenant.
+        Create a customer inside the authorized tenant.
         """
+
         if data.email is not None:
             existing_customer = await self.repository.get_by_email(
                 data.email,
@@ -98,37 +88,27 @@ class CustomerService(TenantScopedService[Customer]):
             notes=data.notes,
         )
 
-        return await self.repository.add(
-            customer,
-        )
+        return await self.repository.add(customer)
 
     async def get(
         self,
         customer_id: UUID,
     ) -> Customer | None:
         """
-        Retrieve one customer belonging to the authorized tenant.
-
-        Customers belonging to another tenant behave as nonexistent
-        because the repository applies the tenant boundary.
+        Retrieve one customer inside the authorized tenant.
         """
-        return await self.repository.get_by_id(
-            customer_id,
-        )
+
+        return await self.repository.get_by_id(customer_id)
 
     async def list(
         self,
         pagination: PaginationParams,
     ) -> tuple[list[Customer], PaginationMeta]:
         """
-        Retrieve paginated customers for the authorized tenant.
-
-        The inherited TenantScopedService handles the tenant-scoped
-        repository query and total count.
+        Retrieve all customers using accurate tenant-scoped pagination.
         """
-        return await super().list(
-            pagination,
-        )
+
+        return await super().list(pagination)
 
     async def list_by_status(
         self,
@@ -136,23 +116,15 @@ class CustomerService(TenantScopedService[Customer]):
         pagination: PaginationParams,
     ) -> tuple[list[Customer], PaginationMeta]:
         """
-        Retrieve customers with a specific status.
-
-        The current repository contract provides status-filtered records
-        but does not yet expose a status-filtered count operation.
-
-        Therefore, pagination metadata for this method currently reflects
-        the number of records returned by the current page.
-
-        A filtered count can be introduced later when the API contract
-        requires accurate total counts for status-filtered collections.
+        Retrieve customers by status with an accurate total count.
         """
+
         records = await self.repository.list_by_status(
             status=status,
             pagination=pagination,
         )
 
-        total = len(records)
+        total = await self.repository.count_by_status(status)
 
         metadata = build_pagination_meta(
             page=pagination.page,
@@ -168,20 +140,15 @@ class CustomerService(TenantScopedService[Customer]):
         pagination: PaginationParams,
     ) -> tuple[list[Customer], PaginationMeta]:
         """
-        Search customers inside the authorized tenant.
-
-        The repository performs the tenant-scoped search.
-
-        The current repository contract does not yet expose a matching
-        search-count operation, so the pagination metadata currently
-        reflects the number of records returned by the current page.
+        Search customers with an accurate tenant-scoped total.
         """
+
         records = await self.repository.search(
             query=query,
             pagination=pagination,
         )
 
-        total = len(records)
+        total = await self.repository.count_search(query)
 
         metadata = build_pagination_meta(
             page=pagination.page,
@@ -198,17 +165,9 @@ class CustomerService(TenantScopedService[Customer]):
     ) -> Customer | None:
         """
         Update a customer belonging to the authorized tenant.
-
-        Ownership fields such as tenant_id and id are not present in the
-        CustomerUpdate schema and therefore cannot be reassigned through
-        this service.
-
-        Duplicate email and phone values are checked against other
-        customers within the same tenant.
         """
-        customer = await self.repository.get_by_id(
-            customer_id,
-        )
+
+        customer = await self.repository.get_by_id(customer_id)
 
         if customer is None:
             return None
@@ -266,14 +225,9 @@ class CustomerService(TenantScopedService[Customer]):
     ) -> Customer | None:
         """
         Archive a customer without physically deleting the database row.
-
-        Archived customers remain available for historical records and
-        auditing while being excluded from normal active-customer flows
-        at the application layer.
         """
-        customer = await self.repository.get_by_id(
-            customer_id,
-        )
+
+        customer = await self.repository.get_by_id(customer_id)
 
         if customer is None:
             return None
@@ -291,9 +245,8 @@ class CustomerService(TenantScopedService[Customer]):
         """
         Restore an archived customer to ACTIVE status.
         """
-        customer = await self.repository.get_by_id(
-            customer_id,
-        )
+
+        customer = await self.repository.get_by_id(customer_id)
 
         if customer is None:
             return None

@@ -1,8 +1,15 @@
 """
 Tests for the tenant-scoped CustomerRepository.
 
-These tests verify customer-specific repository operations and ensure
-that they execute through the repository's tenant-scoped query boundary.
+These tests verify:
+
+- email lookup is tenant-scoped
+- phone lookup is tenant-scoped
+- status listing is tenant-scoped
+- status counting is tenant-scoped
+- customer search is tenant-scoped
+- search counting is tenant-scoped
+- blank search delegates to the normal tenant-scoped operations
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -16,48 +23,51 @@ from app.modules.customers.repository import CustomerRepository
 
 
 @pytest.fixture
-def tenant_id():
-    """Return a tenant ID used by the repository under test."""
-    return uuid4()
-
-
-@pytest.fixture
 def db():
-    """Return an async database-session mock."""
+    """
+    Return a mocked asynchronous SQLAlchemy session.
+    """
+
     return AsyncMock()
 
 
 @pytest.fixture
+def tenant_id():
+    """
+    Return the tenant used by the repository under test.
+    """
+
+    return uuid4()
+
+
+@pytest.fixture
 def repository(db, tenant_id):
-    """Return a customer repository bound to one tenant."""
+    """
+    Build a CustomerRepository bound to one tenant.
+    """
+
     return CustomerRepository(
         db=db,
         tenant_id=tenant_id,
     )
 
 
-def _mock_result(records):
+def assert_statement_contains_tenant(
+    statement,
+    tenant_id,
+):
     """
-    Build a SQLAlchemy-like synchronous Result mock.
+    Verify that the generated SQL contains the repository tenant
+    parameter.
 
-    AsyncSession.execute() is asynchronous and therefore mocked with
-    AsyncMock. The Result object returned after awaiting execute(),
-    however, exposes synchronous methods such as scalar_one_or_none(),
-    scalars(), and ScalarResult.all().
+    SQLAlchemy represents literal values as bound parameters, so the test
+    inspects compiled parameter values instead of searching for the UUID
+    string inside the SQL text.
     """
-    result = MagicMock()
 
-    if len(records) == 1:
-        result.scalar_one_or_none.return_value = records[0]
-    else:
-        result.scalar_one_or_none.return_value = None
+    compiled = statement.compile()
 
-    scalar_result = MagicMock()
-    scalar_result.all.return_value = records
-
-    result.scalars.return_value = scalar_result
-
-    return result
+    assert tenant_id in compiled.params.values()
 
 
 @pytest.mark.asyncio
@@ -67,22 +77,30 @@ async def test_get_by_email_is_tenant_scoped(
     tenant_id,
 ):
     """
-    Verify email lookup executes through the tenant-scoped repository.
+    Email lookup must include the repository tenant boundary.
     """
+
     customer = object()
 
-    db.execute.return_value = _mock_result(
-        [customer],
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = customer
+
+    db.execute = AsyncMock(
+        return_value=result,
     )
 
-    result = await repository.get_by_email(
-        "customer@example.com",
+    response = await repository.get_by_email(
+        "john@example.com",
     )
 
-    assert result is customer
-    assert repository.tenant_id == tenant_id
+    assert response is customer
 
-    db.execute.assert_awaited_once()
+    statement = db.execute.await_args.args[0]
+
+    assert_statement_contains_tenant(
+        statement,
+        tenant_id,
+    )
 
 
 @pytest.mark.asyncio
@@ -92,22 +110,30 @@ async def test_get_by_phone_is_tenant_scoped(
     tenant_id,
 ):
     """
-    Verify phone lookup executes through the tenant-scoped repository.
+    Phone lookup must include the repository tenant boundary.
     """
+
     customer = object()
 
-    db.execute.return_value = _mock_result(
-        [customer],
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = customer
+
+    db.execute = AsyncMock(
+        return_value=result,
     )
 
-    result = await repository.get_by_phone(
+    response = await repository.get_by_phone(
         "+2348012345678",
     )
 
-    assert result is customer
-    assert repository.tenant_id == tenant_id
+    assert response is customer
 
-    db.execute.assert_awaited_once()
+    statement = db.execute.await_args.args[0]
+
+    assert_statement_contains_tenant(
+        statement,
+        tenant_id,
+    )
 
 
 @pytest.mark.asyncio
@@ -117,12 +143,19 @@ async def test_list_by_status_is_tenant_scoped(
     tenant_id,
 ):
     """
-    Verify status filtering is combined with tenant filtering.
+    Status-filtered listing must include the repository tenant boundary.
     """
-    customer = object()
 
-    db.execute.return_value = _mock_result(
-        [customer],
+    customers = [
+        object(),
+        object(),
+    ]
+
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = customers
+
+    db.execute = AsyncMock(
+        return_value=result,
     )
 
     pagination = PaginationParams(
@@ -130,15 +163,50 @@ async def test_list_by_status_is_tenant_scoped(
         page_size=20,
     )
 
-    result = await repository.list_by_status(
+    response = await repository.list_by_status(
         status=CustomerStatus.ACTIVE,
         pagination=pagination,
     )
 
-    assert result == [customer]
-    assert repository.tenant_id == tenant_id
+    assert response == customers
 
-    db.execute.assert_awaited_once()
+    statement = db.execute.await_args.args[0]
+
+    assert_statement_contains_tenant(
+        statement,
+        tenant_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_count_by_status_is_tenant_scoped(
+    repository,
+    db,
+    tenant_id,
+):
+    """
+    Status counts must include the repository tenant boundary.
+    """
+
+    result = MagicMock()
+    result.scalar_one.return_value = 3
+
+    db.execute = AsyncMock(
+        return_value=result,
+    )
+
+    count = await repository.count_by_status(
+        CustomerStatus.ACTIVE,
+    )
+
+    assert count == 3
+
+    statement = db.execute.await_args.args[0]
+
+    assert_statement_contains_tenant(
+        statement,
+        tenant_id,
+    )
 
 
 @pytest.mark.asyncio
@@ -148,12 +216,19 @@ async def test_search_is_tenant_scoped(
     tenant_id,
 ):
     """
-    Verify customer search executes through the tenant-scoped SELECT.
+    Customer search must include the repository tenant boundary.
     """
-    customer = object()
 
-    db.execute.return_value = _mock_result(
-        [customer],
+    customers = [
+        object(),
+        object(),
+    ]
+
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = customers
+
+    db.execute = AsyncMock(
+        return_value=result,
     )
 
     pagination = PaginationParams(
@@ -161,45 +236,101 @@ async def test_search_is_tenant_scoped(
         page_size=20,
     )
 
-    result = await repository.search(
-        query="Acme",
+    response = await repository.search(
+        query="john",
         pagination=pagination,
     )
 
-    assert result == [customer]
-    assert repository.tenant_id == tenant_id
+    assert response == customers
 
-    db.execute.assert_awaited_once()
+    statement = db.execute.await_args.args[0]
+
+    assert_statement_contains_tenant(
+        statement,
+        tenant_id,
+    )
 
 
 @pytest.mark.asyncio
-async def test_search_with_blank_query_delegates_to_tenant_scoped_list(
+async def test_count_search_is_tenant_scoped(
     repository,
     db,
+    tenant_id,
 ):
     """
-    A blank search should behave like a normal tenant-scoped list.
+    Search counts must include the repository tenant boundary.
     """
-    customer = object()
 
-    repository.list = AsyncMock(
-        return_value=[customer],
+    result = MagicMock()
+    result.scalar_one.return_value = 5
+
+    db.execute = AsyncMock(
+        return_value=result,
     )
+
+    count = await repository.count_search(
+        "john",
+    )
+
+    assert count == 5
+
+    statement = db.execute.await_args.args[0]
+
+    assert_statement_contains_tenant(
+        statement,
+        tenant_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_blank_search_delegates_to_tenant_scoped_list(
+    repository,
+):
+    """
+    A blank search query should behave like the normal paginated list.
+    """
+
+    customers = [
+        object(),
+    ]
 
     pagination = PaginationParams(
         page=1,
         page_size=20,
     )
 
-    result = await repository.search(
+    repository.list = AsyncMock(
+        return_value=customers,
+    )
+
+    response = await repository.search(
         query="   ",
         pagination=pagination,
     )
 
-    assert result == [customer]
+    assert response == customers
 
     repository.list.assert_awaited_once_with(
         pagination,
     )
 
-    db.execute.assert_not_awaited()
+
+@pytest.mark.asyncio
+async def test_blank_search_count_delegates_to_tenant_scoped_count(
+    repository,
+):
+    """
+    A blank search count should behave like the normal tenant count.
+    """
+
+    repository.count = AsyncMock(
+        return_value=7,
+    )
+
+    count = await repository.count_search(
+        "   ",
+    )
+
+    assert count == 7
+
+    repository.count.assert_awaited_once()
