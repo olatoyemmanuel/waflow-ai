@@ -3,32 +3,33 @@ WAFlow AI conversation domain model.
 
 A Conversation represents a customer communication thread within a
 tenant. The initial implementation is channel-aware and designed around
-WhatsApp, while retaining an extensible channel enum for future channels.
+WhatsApp.
 
 Security principles:
 
 - Every conversation belongs to exactly one tenant.
-- Every conversation is associated with one customer.
+- Every conversation is associated with exactly one customer.
 - Tenant ownership is enforced by the application/service layer.
 - Database foreign keys protect referenced records.
-- Assignment to an authenticated user is optional.
+- Assignment to a user is optional.
 - Conversation lifecycle changes are explicit through status values.
-- AI versus human handling is represented explicitly so the future
-  orchestration layer can make deterministic decisions.
+- AI versus human handling is represented explicitly.
+- PostgreSQL timezone-aware timestamps are used explicitly so the ORM
+  metadata matches the PostgreSQL schema used by Alembic.
 """
 
 import enum
 import uuid
 from datetime import datetime
 
+from sqlalchemy import Enum as SqlEnum
 from sqlalchemy import (
-    DateTime,
     ForeignKey,
     Index,
     Integer,
     func,
 )
-from sqlalchemy import Enum as SqlEnum
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.models import Base
@@ -94,8 +95,7 @@ class Conversation(Base):
     A conversation belongs to one tenant and one customer. It may
     optionally be assigned to a user who belongs to that tenant.
 
-    Message records will be introduced in the next milestone and will
-    reference this model through conversation_id.
+    Message records will reference this model through conversation_id.
     """
 
     __tablename__ = "conversations"
@@ -212,16 +212,18 @@ class Conversation(Base):
     )
 
     last_message_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
+        postgresql.TIMESTAMP(timezone=True),
         nullable=True,
     )
 
     created_at: Mapped[datetime] = mapped_column(
+        postgresql.TIMESTAMP(timezone=True),
         server_default=func.now(),
         nullable=False,
     )
 
     updated_at: Mapped[datetime] = mapped_column(
+        postgresql.TIMESTAMP(timezone=True),
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
